@@ -9,8 +9,9 @@ puppeteer.use(StealthPlugin());
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// STORAGE untuk fingerprint terbaru
+// STORAGE untuk fingerprint dan cookies dari browser asli
 let latestBrowserFingerprint = null;
+let browserCookies = [];
 
 // Proxy configuration
 const PROXY_HOST = 'network.mrproxy.com';
@@ -22,56 +23,54 @@ const proxyUrl = `http://${PROXY_USER}:${PROXY_PASS}@${PROXY_HOST}:${PROXY_PORT}
 // Rate limiting configuration
 let requestCount = 0;
 let lastRequestTime = Date.now();
-const MIN_DELAY = 3000;
-const MAX_DELAY = 7000;
-const MAX_RETRIES = 5; // Maximum retry attempts
+const MIN_DELAY = 5000;
+const MAX_DELAY = 10000;
+const MAX_RETRIES = 5;
 
-// User agents pool for rotation
+// Enhanced User agents (lebih banyak variasi)
 const userAgents = [
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0'
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0'
 ];
 
-// Accept-Language pool for rotation
+// Accept-Language pool (Korean focused)
 const acceptLanguages = [
   'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
   'ko-KR,ko;q=0.9',
   'ko;q=0.9,en;q=0.8',
   'ko-KR,ko;q=0.8,en-US;q=0.7,en;q=0.6',
-  'ko-KR,ko;q=0.9,en;q=0.8'
+  'ko-KR,ko;q=0.9,en;q=0.8,ja;q=0.7'
 ];
 
-// Sec-Ch-Ua variations
+// Sec-Ch-Ua variations (updated untuk Chrome 131)
 const secChUaVariations = [
-  '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-  '"Not_A Brand";v="8", "Chromium";v="120"',
-  '"Chromium";v="120", "Google Chrome";v="120", "Not-A.Brand";v="99"',
-  '"Microsoft Edge";v="121", "Chromium";v="121", "Not-A.Brand";v="99"'
+  '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+  '"Chromium";v="131", "Not_A Brand";v="24"',
+  '"Microsoft Edge";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+  '"Google Chrome";v="130", "Chromium";v="130", "Not_A Brand";v="99"'
 ];
 
 // Platform variations
 const platforms = ['"Windows"', '"macOS"', '"Linux"'];
 
-// Track used fingerprints to avoid immediate reuse
+// Track used fingerprints
 let usedFingerprints = [];
 const MAX_FINGERPRINT_HISTORY = 5;
 
-// Function to get random element from array
+// Helper functions
 function getRandomElement(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-// Function to generate random delay
 function getRandomDelay() {
   return Math.floor(Math.random() * (MAX_DELAY - MIN_DELAY + 1)) + MIN_DELAY;
 }
 
-// Function to implement request throttling
 async function throttleRequest() {
   const now = Date.now();
   const timeSinceLastRequest = now - lastRequestTime;
@@ -85,7 +84,7 @@ async function throttleRequest() {
   requestCount++;
 }
 
-// Enhanced function to generate fingerprint with uniqueness tracking
+// Enhanced fingerprint generator dengan headers yang lebih lengkap
 function generateFingerprint(excludeRecent = true) {
   let fingerprint;
   let attempts = 0;
@@ -93,24 +92,32 @@ function generateFingerprint(excludeRecent = true) {
   
   do {
     const userAgent = getRandomElement(userAgents);
-    const isChrome = userAgent.includes('Chrome');
+    const isChrome = userAgent.includes('Chrome') && !userAgent.includes('Edg');
+    const isEdge = userAgent.includes('Edg');
     const isFirefox = userAgent.includes('Firefox');
     const acceptLanguage = getRandomElement(acceptLanguages);
     
+    // CRITICAL: Naver memerlukan headers yang sangat spesifik
     const baseHeaders = {
       'User-Agent': userAgent,
       'Accept': 'application/json, text/plain, */*',
       'Accept-Language': acceptLanguage,
-      'Accept-Encoding': 'gzip, deflate, br',
+      'Accept-Encoding': 'gzip, deflate, br, zstd',
       'Referer': 'https://search.shopping.naver.com/',
       'Origin': 'https://search.shopping.naver.com',
       'Connection': 'keep-alive',
+      'DNT': '1',
+      'Sec-GPC': '1',
+      'Priority': 'u=1, i',
+      'Pragma': 'no-cache',
       'Cache-Control': 'no-cache',
-      'Pragma': 'no-cache'
+      // PENTING: Header Naver-specific
+      'X-Search-Source': 'shopping',
+      'X-Client-Version': '2.0.0',
     };
     
     // Add Chrome-specific headers
-    if (isChrome) {
+    if (isChrome || isEdge) {
       baseHeaders['Sec-Fetch-Dest'] = 'empty';
       baseHeaders['Sec-Fetch-Mode'] = 'cors';
       baseHeaders['Sec-Fetch-Site'] = 'same-origin';
@@ -134,7 +141,7 @@ function generateFingerprint(excludeRecent = true) {
     attempts++;
   } while (attempts < maxAttempts);
   
-  // If we couldn't find unused fingerprint, use any
+  // Fallback if no unique fingerprint found
   if (!fingerprint) {
     const userAgent = getRandomElement(userAgents);
     const isChrome = userAgent.includes('Chrome');
@@ -144,12 +151,17 @@ function generateFingerprint(excludeRecent = true) {
       'User-Agent': userAgent,
       'Accept': 'application/json, text/plain, */*',
       'Accept-Language': acceptLanguage,
-      'Accept-Encoding': 'gzip, deflate, br',
+      'Accept-Encoding': 'gzip, deflate, br, zstd',
       'Referer': 'https://search.shopping.naver.com/',
       'Origin': 'https://search.shopping.naver.com',
       'Connection': 'keep-alive',
+      'DNT': '1',
+      'Sec-GPC': '1',
+      'Priority': 'u=1, i',
+      'Pragma': 'no-cache',
       'Cache-Control': 'no-cache',
-      'Pragma': 'no-cache'
+      'X-Search-Source': 'shopping',
+      'X-Client-Version': '2.0.0',
     };
     
     if (isChrome) {
@@ -170,13 +182,19 @@ function generateFingerprint(excludeRecent = true) {
   // Track this fingerprint
   usedFingerprints.push(fingerprint.signature);
   if (usedFingerprints.length > MAX_FINGERPRINT_HISTORY) {
-    usedFingerprints.shift(); // Remove oldest
+    usedFingerprints.shift();
   }
   
   return fingerprint;
 }
 
-// Enhanced scraping function with retry and fingerprint rotation
+// Helper function to convert cookies to Cookie header string
+function cookiesToString(cookies) {
+  if (!cookies || cookies.length === 0) return '';
+  return cookies.map(cookie => `${cookie.name}=${cookie.value}`).join('; ');
+}
+
+// Enhanced scraping with better anti-detection
 async function scrapeWithRetry(url, maxRetries = MAX_RETRIES) {
   let lastError;
   let fingerprint;
@@ -184,36 +202,66 @@ async function scrapeWithRetry(url, maxRetries = MAX_RETRIES) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       // Generate new fingerprint for each attempt
-      fingerprint = generateFingerprint(attempt > 1); // Exclude recent after first attempt
+      fingerprint = generateFingerprint(attempt > 1);
       
-      console.log(`[Attempt ${attempt}/${maxRetries}] Using fingerprint: ${fingerprint.signature.substring(0, 50)}...`);
+      console.log(`[Attempt ${attempt}/${maxRetries}] Scraping URL...`);
+      console.log(`[Fingerprint] ${fingerprint.signature.substring(0, 80)}...`);
       
       // Configure proxy agent
       const proxyAgent = new HttpsProxyAgent(proxyUrl);
       
-      // Make request with current fingerprint
+      // Build headers dengan priority order:
+      // 1. Browser fingerprint (jika ada dari puppeteer)
+      // 2. Generated fingerprint
+      // 3. Cookies (jika ada)
+      const headers = { ...fingerprint.headers };
+      
+      // Merge dengan browser fingerprint jika ada
+      if (latestBrowserFingerprint) {
+        Object.assign(headers, latestBrowserFingerprint);
+        console.log('[Enhanced] Using real browser fingerprint');
+      }
+      
+      // Add cookies jika ada
+      if (browserCookies && browserCookies.length > 0) {
+        headers['Cookie'] = cookiesToString(browserCookies);
+        console.log('[Enhanced] Using browser cookies');
+      }
+      
+      // PENTING: Parse URL untuk mendapatkan query params
+      const urlObj = new URL(url);
+      
+      // Make request dengan config yang optimal
       const config = {
         method: 'GET',
         url: url,
-        headers: fingerprint.headers,
+        headers: headers,
         httpsAgent: proxyAgent,
         httpAgent: proxyAgent,
         timeout: 30000,
+        maxRedirects: 5,
         validateStatus: (status) => status < 500,
-        maxRedirects: 5
+        // PENTING: Jangan decompress otomatis (biar natural)
+        decompress: true,
+        // PENTING: Follow redirects
+        maxRedirects: 5,
       };
-      if (latestBrowserFingerprint) {
-            config.headers = {
-            ...config.headers,
-            ...latestBrowserFingerprint
-            };
-        console.log("Menggunakan fingerprint browser asli dari puppeteer.");
-        }
+      
+      console.log(`[Request] GET ${urlObj.pathname}${urlObj.search}`);
+      
       const response = await axios(config);
       
-      // Check if response is successful
+      console.log(`[Response] Status: ${response.status}, Size: ${JSON.stringify(response.data).length} bytes`);
+      
+      // Check response status
       if (response.status === 200) {
-        console.log(`[Attempt ${attempt}] ✓ Success with fingerprint rotation`);
+        // Validate response data
+        if (!response.data || typeof response.data !== 'object') {
+          throw new Error('Invalid response format');
+        }
+        
+        console.log(`[Attempt ${attempt}] ✓ SUCCESS`);
+        
         return {
           success: true,
           data: response.data,
@@ -221,26 +269,29 @@ async function scrapeWithRetry(url, maxRetries = MAX_RETRIES) {
           attempt: attempt,
           fingerprint: fingerprint.signature
         };
+      } else if (response.status === 418) {
+        // 418 = Bot detected!
+        lastError = new Error(`Bot detected (418). Rotating fingerprint and retrying...`);
+        console.log(`[Attempt ${attempt}] ✗ Bot detected (418) - Need better fingerprint`);
+      } else {
+        lastError = new Error(`HTTP ${response.status}: ${response.statusText}`);
+        console.log(`[Attempt ${attempt}] ✗ Failed with status ${response.status}`);
       }
       
-      // If status is not 200, treat as error and retry
-      lastError = new Error(`HTTP ${response.status}: ${response.statusText}`);
-      console.log(`[Attempt ${attempt}] ✗ Failed with status ${response.status}, rotating fingerprint...`);
-      
-      // Wait before retry with increasing delay
+      // Wait before retry with exponential backoff
       if (attempt < maxRetries) {
-        const retryDelay = getRandomDelay() * attempt; // Exponential backoff
+        const retryDelay = getRandomDelay() * attempt;
         console.log(`[Retry] Waiting ${retryDelay}ms before next attempt...`);
         await new Promise(resolve => setTimeout(resolve, retryDelay));
       }
       
     } catch (error) {
       lastError = error;
-      console.log(`[Attempt ${attempt}] ✗ Error: ${error.message}, rotating fingerprint...`);
+      console.log(`[Attempt ${attempt}] ✗ Error: ${error.message}`);
       
-      // Wait before retry with increasing delay
+      // Wait before retry
       if (attempt < maxRetries) {
-        const retryDelay = getRandomDelay() * attempt; // Exponential backoff
+        const retryDelay = getRandomDelay() * attempt;
         console.log(`[Retry] Waiting ${retryDelay}ms before next attempt...`);
         await new Promise(resolve => setTimeout(resolve, retryDelay));
       }
@@ -250,7 +301,7 @@ async function scrapeWithRetry(url, maxRetries = MAX_RETRIES) {
   // All retries failed
   return {
     success: false,
-    error: lastError.message,
+    error: lastError?.message || 'Unknown error',
     attempts: maxRetries,
     lastFingerprint: fingerprint?.signature
   };
@@ -258,8 +309,6 @@ async function scrapeWithRetry(url, maxRetries = MAX_RETRIES) {
 
 // Middleware
 app.use(express.json());
-
-// CORS middleware
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -267,7 +316,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// Health check endpoint
+// Health check
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
@@ -277,12 +326,14 @@ app.get('/health', (req, res) => {
     features: {
       fingerprintRotation: true,
       automaticRetry: true,
-      maxRetries: MAX_RETRIES
+      maxRetries: MAX_RETRIES,
+      browserFingerprintActive: !!latestBrowserFingerprint,
+      cookiesActive: browserCookies.length > 0
     }
   });
 });
 
-// Statistics endpoint
+// Stats endpoint
 app.get('/stats', (req, res) => {
   res.json({
     totalRequests: requestCount,
@@ -296,22 +347,20 @@ app.get('/stats', (req, res) => {
       secChUaVariations: secChUaVariations.length,
       recentlyUsed: usedFingerprints.length
     },
+    browserEnhancement: {
+      fingerprintCaptured: !!latestBrowserFingerprint,
+      cookiesCount: browserCookies.length,
+      lastCaptured: latestBrowserFingerprint ? 'Active' : 'Not captured'
+    },
     retryConfig: {
       maxRetries: MAX_RETRIES,
       exponentialBackoff: true,
       fingerprintRotationOnRetry: true
-    },
-    features: {
-      fingerprintRotation: true,
-      ipRotation: true,
-      requestThrottling: true,
-      randomDelays: true,
-      automaticRetry: true
     }
   });
 });
 
-// Main scraping endpoint with automatic retry and fingerprint rotation
+// MAIN SCRAPING ENDPOINT - Enhanced
 app.get('/naver', async (req, res) => {
   const startTime = Date.now();
   
@@ -328,29 +377,32 @@ app.get('/naver', async (req, res) => {
     }
 
     // Validate URL
-    if (!url.includes('search.shopping.naver.com/ns/v1/search/paged-composite-cards')) {
+    if (!url.includes('search.shopping.naver.com')) {
       return res.status(400).json({ 
         success: false,
-        error: 'Invalid URL. Must be a Naver paged-composite-cards API URL',
+        error: 'Invalid URL. Must be a Naver shopping URL',
         received: url,
         timestamp: new Date().toISOString()
       });
     }
 
-    console.log(`[${new Date().toISOString()}] Request #${requestCount + 1}: Starting with auto-retry...`);
+    console.log('\n' + '='.repeat(80));
+    console.log(`[${new Date().toISOString()}] Request #${requestCount + 1}`);
+    console.log('='.repeat(80));
 
     // Implement request throttling
     await throttleRequest();
 
-    // Scrape with automatic retry and fingerprint rotation
+    // Scrape with retry
     const result = await scrapeWithRetry(url);
 
     const latency = Date.now() - startTime;
 
     if (result.success) {
-      console.log(`[${new Date().toISOString()}] Request #${requestCount}: SUCCESS (${latency}ms, Attempt: ${result.attempt}/${MAX_RETRIES})`);
+      console.log(`\n✓ REQUEST SUCCESS (${latency}ms, Attempts: ${result.attempt}/${MAX_RETRIES})`);
+      console.log('='.repeat(80) + '\n');
 
-      // Return the scraped data
+      // Return successful response
       res.json({
         success: true,
         latency: `${latency}ms`,
@@ -361,18 +413,26 @@ app.get('/naver', async (req, res) => {
           timestamp: new Date().toISOString(),
           proxyUsed: true,
           fingerprintRotated: true,
+          browserFingerprintUsed: !!latestBrowserFingerprint,
+          cookiesUsed: browserCookies.length > 0,
           attemptsUsed: result.attempt,
           maxRetries: MAX_RETRIES,
           finalFingerprint: result.fingerprint.substring(0, 100) + '...'
         }
       });
     } else {
-      console.error(`[${new Date().toISOString()}] Request #${requestCount}: FAILED after ${result.attempts} attempts (${latency}ms)`);
+      console.error(`\n✗ REQUEST FAILED after ${result.attempts} attempts (${latency}ms)`);
+      console.error(`Error: ${result.error}`);
+      console.log('='.repeat(80) + '\n');
       
+      // Return error with suggestion
       res.status(500).json({
         success: false,
         error: result.error,
         latency: `${latency}ms`,
+        suggestion: result.error.includes('418') 
+          ? 'Bot detected. Try running /naver/fingerprint to capture real browser fingerprint first.'
+          : 'Request failed. Check proxy connection and try again.',
         metadata: {
           requestCount,
           timestamp: new Date().toISOString(),
@@ -386,7 +446,8 @@ app.get('/naver', async (req, res) => {
   } catch (error) {
     const latency = Date.now() - startTime;
     
-    console.error(`[${new Date().toISOString()}] Request #${requestCount}: UNEXPECTED ERROR - ${error.message}`);
+    console.error(`\n✗ UNEXPECTED ERROR: ${error.message}`);
+    console.log('='.repeat(80) + '\n');
     
     res.status(500).json({
       success: false,
@@ -400,279 +461,143 @@ app.get('/naver', async (req, res) => {
   }
 });
 
-// Example endpoint
-app.get('/', (req, res) => {
-  const exampleUrl = 'https://search.shopping.naver.com/ns/v1/search/paged-composite-cards?cursor=1&pageSize=50&query=nike&searchMethod=all.basic';
+// ENHANCED: Capture real browser fingerprint + cookies
+app.get("/naver/fingerprint", async (req, res) => {
+  let browser;
+  try {
+    console.log('\n🔍 Starting browser fingerprint capture...');
+    
+    browser = await puppeteer.launch({
+      headless: false,
+      channel: "chrome",
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        `--proxy-server=${PROXY_HOST}:${PROXY_PORT}`,
+      ],
+    });
+
+    const page = await browser.newPage();
+    
+    // Authenticate proxy
+    await page.authenticate({
+      username: PROXY_USER,
+      password: PROXY_PASS,
+    });
+
+    console.log('📡 Navigating to Naver Shopping...');
+    
+    // Navigate to Naver Shopping
+    await page.goto('https://search.shopping.naver.com/ns/search?query=iphone ', {
+      waitUntil: 'networkidle2',
+      timeout: 60000
+    });
+
+    console.log('⏳ Waiting for page to fully load...');
+    await new Promise(resolve => setTimeout(resolve, 30000));
+
+    // Capture browser fingerprint
+    const fingerprint = await page.evaluate(() => {
+      return {
+        userAgent: navigator.userAgent,
+        platform: navigator.platform,
+        language: navigator.language,
+        languages: navigator.languages,
+        hardwareConcurrency: navigator.hardwareConcurrency,
+        deviceMemory: navigator.deviceMemory || null,
+        screen: {
+          width: window.screen.width,
+          height: window.screen.height,
+          colorDepth: window.screen.colorDepth
+        },
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        plugins: Array.from(navigator.plugins).map(p => p.name)
+      };
+    });
+
+    // Capture cookies
+    const cookies = await page.cookies();
+    
+    // Store for later use
+    browserCookies = cookies;
+    
+    // Convert fingerprint to headers format
+    latestBrowserFingerprint = {
+      'User-Agent': fingerprint.userAgent,
+      'Accept-Language': fingerprint.language,
+      'Sec-Ch-Ua-Platform': `"${fingerprint.platform}"`,
+    };
+
+    console.log('✓ Fingerprint captured successfully!');
+    console.log(`  - Cookies: ${cookies.length} items`);
+    console.log(`  - User-Agent: ${fingerprint.userAgent.substring(0, 50)}...`);
+
+    await browser.close();
+
+    res.json({
+      success: true,
+      message: 'Browser fingerprint and cookies captured successfully!',
+      fingerprint: fingerprint,
+      cookiesCount: cookies.length,
+      note: 'This fingerprint will be used for subsequent /naver requests'
+    });
+
+  } catch (error) {
+    if (browser) await browser.close();
+    console.error('✗ Error capturing fingerprint:', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Clear captured fingerprint/cookies
+app.get("/naver/clear", (req, res) => {
+  latestBrowserFingerprint = null;
+  browserCookies = [];
+  usedFingerprints = [];
   
   res.json({
-    message: 'Naver Shopping Scraper API with Auto-Retry & Fingerprint Rotation',
-    version: '2.0.0',
-    endpoints: {
-      health: {
-        url: '/health',
-        description: 'Check API health status'
-      },
-      stats: {
-        url: '/stats',
-        description: 'Get detailed API statistics'
-      },
-      scrape: {
-        url: '/naver?url=<NAVER_API_URL>',
-        description: 'Scrape Naver shopping data with automatic retry'
-      }
-    },
-    example: `/naver?url=${encodeURIComponent(exampleUrl)}`,
-    features: [
-      'Automatic fingerprint rotation on each request',
-      'Retry on failure with NEW fingerprint (max 3 attempts)',
-      'Exponential backoff between retries',
-      'IP rotation via proxy',
-      'Request throttling (1-3s delay)',
-      'Fingerprint history tracking to avoid reuse',
-      'Comprehensive error handling'
-    ],
-    retryStrategy: {
-      maxRetries: MAX_RETRIES,
-      behavior: 'On error/non-200 status, automatically retry with new fingerprint',
-      backoff: 'Exponential (delay × attempt number)',
-      fingerprintRotation: 'New fingerprint generated for each retry attempt',
-      fingerprintTracking: 'Last 5 fingerprints tracked to avoid immediate reuse'
-    }
+    success: true,
+    message: 'Cleared all captured fingerprints and cookies'
   });
 });
 
-// app.get("/naver/fingerprint", async (req, res) => {
-//   try {
-//     const target = "https://search.shopping.naver.com/";
-
-//     const browser = await puppeteer.launch({
-//       headless: false,
-//       args: [
-//         "--no-sandbox",
-//         "--disable-setuid-sandbox",
-//         "--disable-blink-features=AutomationControlled"
-//       ]
-//     });
-
-//     const page = await browser.newPage();
-
-//     await page.setRequestInterception(true);
-
-//     page.on("request", (interceptedReq) => {
-//       interceptedReq.continue();
-//     });
-
-//     const collectedHeaders = {};
-
-//     page.on("requestfinished", async (finishedReq) => {
-//       const url = finishedReq.url();
-
-//       // Target Naver API
-//       if (url.includes("paged-composite-cards")) {
-//         const headers = finishedReq.headers();
-//         collectedHeaders[url] = headers;
-//         latestBrowserFingerprint = headers; // save for later use
-//       }
-//     });
-
-//     console.log("Opening Naver page...");
-//     await page.goto(target, { waitUntil: "networkidle2", timeout: 60000 });
-
-//     // Tunggu request API keluar (Naver suka lazy-loading)
-//     await new Promise(resolve => setTimeout(resolve, 60000));
-
-//     await browser.close();
-
-//     if (!latestBrowserFingerprint) {
-//       return res.status(404).json({
-//         success: false,
-//         message: "Tidak menemukan API header. Scroll halaman dulu di browser."
-//       });
-//     }
-
-//     res.json({
-//       success: true,
-//       message: "Fingerprint berhasil ditangkap!",
-//       fingerprint: latestBrowserFingerprint
-//     });
-
-//   } catch (err) {
-//     res.status(500).json({
-//       success: false,
-//       error: err.message
-//     });
-//   }
-// });
-
-// app.get("/naver/start", async (req, res) => {
-//     try {
-//         naverSession.browser = await puppeteer.launch({
-//             headless: false,
-//             channel: "chrome",
-//             args: ["--no-sandbox"],
-//         });
-
-//         naverSession.page = await naverSession.browser.newPage();
-
-//         // Buka halaman utama Naver Shopping (akan trigger cookies, tokens, atau CAPTCHA)
-//         await naverSession.page.goto("https://search.shopping.naver.com", {
-//             waitUntil: "networkidle2",
-//         });
-
-//         res.json({
-//             success: true,
-//             message:
-//                 "Browser launched. Solve CAPTCHA or login if needed. When finished, call /naver/collect",
-//         });
-//     } catch (error) {
-//         res.json({ success: false, error: error.message });
-//     }
-// });
-
-// app.get("/naver/collect", async (req, res) => {
-//     try {
-//         const page = naverSession.page;
-//         if (!page) {
-//             return res.json({
-//                 success: false,
-//                 error: "No active session. Run /naver/start first.",
-//             });
-//         }
-
-//         // Ambil cookies
-//         const cookies = await page.cookies();
-
-//         // Ambil localStorage
-//         const localStorageData = await page.evaluate(() => {
-//             let data = {};
-//             for (let i = 0; i < localStorage.length; i++) {
-//                 const key = localStorage.key(i);
-//                 data[key] = localStorage.getItem(key);
-//             }
-//             return data;
-//         });
-
-//         // Ambil sessionStorage
-//         const sessionStorageData = await page.evaluate(() => {
-//             let data = {};
-//             for (let i = 0; i < sessionStorage.length; i++) {
-//                 const key = sessionStorage.key(i);
-//                 data[key] = sessionStorage.getItem(key);
-//             }
-//             return data;
-//         });
-
-//         // Ambil response tokens (x-naver-client*, dll)
-//         const performanceEntries = await page.evaluate(() => {
-//             const entries = performance.getEntries() || [];
-//             const apiCalls = entries.filter((e) =>
-//                 e.name.includes("search/paged-composite-cards")
-//             );
-//             return apiCalls.map((e) => e.name);
-//         });
-
-//         // Ambil Request Headers untuk API internal Naver
-//         let capturedHeaders = {};
-//         page.on("request", (req) => {
-//             if (req.url().includes("paged-composite-cards")) {
-//                 capturedHeaders = req.headers();
-//             }
-//         });
-
-//         await new Promise((resolve) => setTimeout(resolve, 1500));
-
-//         // Ambil fingerprint
-//         const fingerprint = await page.evaluate(() => {
-//             return {
-//                 userAgent: navigator.userAgent,
-//                 platform: navigator.platform,
-//                 language: navigator.language,
-//                 languages: navigator.languages,
-//                 hardwareConcurrency: navigator.hardwareConcurrency,
-//                 deviceMemory: navigator.deviceMemory || null,
-//                 screen: {
-//                     width: window.screen.width,
-//                     height: window.screen.height,
-//                     colorDepth: window.screen.colorDepth,
-//                 },
-//                 timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-//                 plugins: Array.from(navigator.plugins).map((p) => p.name),
-//             };
-//         });
-
-//         // Tutup browser setelah selesai
-//         await naverSession.browser.close();
-
-//         // Reset session
-//         naverSession.browser = null;
-//         naverSession.page = null;
-
-//         res.json({
-//             success: true,
-//             cookies,
-//             localStorage: localStorageData,
-//             sessionStorage: sessionStorageData,
-//             capturedHeaders,
-//             apiEndpointsDetected: performanceEntries,
-//             fingerprint,
-//         });
-//     } catch (error) {
-//         res.json({
-//             success: false,
-//             error: error.message,
-//         });
-//     }
-// });
-
-
-app.get("/naver/fingerprint", async (req, res) => {
-    let browser;
-    try {
-        browser = await puppeteer.launch({
-            headless: false,
-            channel: "chrome",
-            args: ["--no-sandbox"],
-        });
-
-        const page = await browser.newPage();
-
-        // Tunggu 2 detik → Ganti waitForTimeout
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
-        const fingerprint = await page.evaluate(() => {
-            return {
-                userAgent: navigator.userAgent,
-                platform: navigator.platform,
-                language: navigator.language,
-                languages: navigator.languages,
-                hardwareConcurrency: navigator.hardwareConcurrency,
-                deviceMemory: navigator.deviceMemory || null,
-                screen: {
-                    width: window.screen.width,
-                    height: window.screen.height,
-                    colorDepth: window.screen.colorDepth
-                },
-                timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-                plugins: Array.from(navigator.plugins).map(p => p.name)
-            };
-        });
-
-        res.json({
-            success: true,
-            fingerprint
-        });
-
-        await browser.close();
-    } catch (error) {
-        if (browser) await browser.close();
-        res.json({
-            success: false,
-            error: error.message
-        });
-    }
+// Example endpoint
+app.get('/', (req, res) => {
+  const exampleUrl = 'https://search.shopping.naver.com/ns/v1/search/paged-composite-cards?cursor=1&pageSize=50&query=iphone&searchMethod=all.basic';
+  
+  res.json({
+    message: 'Naver Shopping Scraper API - Enhanced Anti-Detection',
+    version: '3.0.0',
+    endpoints: {
+      health: '/health - Check API status',
+      stats: '/stats - Get detailed statistics',
+      scrape: '/naver?url=<URL> - Scrape Naver data',
+      captureFingerprint: '/naver/fingerprint - Capture real browser fingerprint',
+      clearFingerprint: '/naver/clear - Clear captured data'
+    },
+    usage: [
+      '1. First run: GET /naver/fingerprint (capture real browser data)',
+      '2. Then scrape: GET /naver?url=<NAVER_URL>',
+      '3. API will use captured fingerprint for better success rate'
+    ],
+    example: `/naver?url=${encodeURIComponent(exampleUrl)}`,
+    features: [
+      'Real browser fingerprint capture via Puppeteer',
+      'Cookie management from real browser session',
+      'Enhanced headers with Naver-specific requirements',
+      'Automatic retry with fingerprint rotation (max 5)',
+      'Exponential backoff between retries',
+      'IP rotation via proxy',
+      'Request throttling (3-7s delay)',
+      '418 Bot detection handling'
+    ]
+  });
 });
 
-// Error handling middleware
+// Error handling
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
   res.status(500).json({
@@ -685,28 +610,25 @@ app.use((err, req, res, next) => {
 
 // Start server
 app.listen(PORT, () => {
-  console.log('='.repeat(70));
-  console.log('🚀 Naver Scraper API v2.0 - Enhanced with Auto-Retry');
-  console.log('='.repeat(70));
-  console.log(`📡 Server running on: http://localhost:${PORT}`);
+  console.log('\n' + '='.repeat(80));
+  console.log('🚀 Naver Scraper API v3.0 - Enhanced Anti-Detection');
+  console.log('='.repeat(80));
+  console.log(`📡 Server: http://localhost:${PORT}`);
   console.log(`📊 Proxy: ${PROXY_HOST}:${PROXY_PORT} (Korea)`);
-  console.log(`⏱️  Request throttling: ${MIN_DELAY}-${MAX_DELAY}ms`);
-  console.log(`🔄 User-Agent pool: ${userAgents.length} variations`);
-  console.log(`🌐 Accept-Language pool: ${acceptLanguages.length} variations`);
-  console.log(`🔁 Max retry attempts: ${MAX_RETRIES} with fingerprint rotation`);
-  console.log(`📝 Fingerprint history: Last ${MAX_FINGERPRINT_HISTORY} tracked`);
-  console.log('='.repeat(70));
-  console.log('\n✨ New Features:');
-  console.log('   → Automatic retry on error with NEW fingerprint');
-  console.log('   → Exponential backoff between retries');
-  console.log('   → Fingerprint uniqueness tracking');
-  console.log('   → Enhanced logging for debugging');
-  console.log('\n📖 Endpoints:');
-  console.log(`   - GET /health      → Health check`);
-  console.log(`   - GET /stats       → Detailed statistics`);
-  console.log(`   - GET /naver?url=  → Scrape with auto-retry`);
-  console.log(`   - GET /            → Documentation`);
-  console.log('\n🎯 Ready to accept requests with intelligent retry!\n');
+  console.log(`⏱️  Throttling: ${MIN_DELAY}-${MAX_DELAY}ms`);
+  console.log(`🔁 Max Retries: ${MAX_RETRIES}`);
+  console.log(`🎭 Fingerprint Pool: ${userAgents.length} User-Agents`);
+  console.log('='.repeat(80));
+  console.log('\n✨ Enhanced Features:');
+  console.log('   → Real browser fingerprint capture with Puppeteer');
+  console.log('   → Cookie management from browser session');
+  console.log('   → Naver-specific header optimization');
+  console.log('   → 418 Bot detection handling');
+  console.log('   → Automatic retry with exponential backoff');
+  console.log('\n📖 Quick Start:');
+  console.log('   1. GET /naver/fingerprint  (capture browser data)');
+  console.log('   2. GET /naver?url=...      (start scraping)');
+  console.log('\n🎯 Ready to scrape Naver Shopping!\n');
 });
 
 module.exports = app;
